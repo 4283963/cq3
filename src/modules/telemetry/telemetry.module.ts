@@ -4,6 +4,7 @@ import { Location, LocationSchema } from './schemas/location.schema';
 import { Temperature, TemperatureSchema } from './schemas/temperature.schema';
 import { LocationRepository } from './repositories/location.repository';
 import { TemperatureRepository } from './repositories/temperature.repository';
+import { LruCacheService } from './services/lru-cache.service';
 import { LocationService } from './services/location.service';
 import { TemperatureService } from './services/temperature.service';
 import { TelemetryService } from './services/telemetry.service';
@@ -19,12 +20,13 @@ import { HistoryController } from './controllers/history.controller';
   ],
   controllers: [TelemetryController, HistoryController],
   providers: [
+    LruCacheService,
     LocationRepository,
     TemperatureRepository,
     LocationService,
     TemperatureService,
     TelemetryService,
   ],
-  exports: [TelemetryService, LocationService, TemperatureService],
+  exports: [TelemetryService, LocationService, TemperatureService, LruCacheService],
 })
 export class TelemetryModule {}

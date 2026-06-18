@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { LocationRepository } from '../repositories/location.repository';
+import { LocationRepository, LeanLocation, SeekPaginatedResult, LocationStats } from '../repositories/location.repository';
 import { LocationItemDto } from '../dto/telemetry.dto';
+import { LruCacheService, buildKey } from './lru-cache.service';
 
 @Injectable()
 export class LocationService {
   private readonly logger = new Logger(LocationService.name);
 
-  constructor(private readonly locationRepository: LocationRepository) {}
+  constructor(
+    private readonly locationRepository: LocationRepository,
+    private readonly cache: LruCacheService,
+  ) {}
 
   async bulkProcess(locations: LocationItemDto[]): Promise<number> {
     if (locations.length === 0) return 0;
@@ -29,6 +33,10 @@ export class LocationService {
       const batch = docs.slice(i, i + batchSize);
       const result = await this.locationRepository.bulkInsert(batch);
       totalInserted += result.insertedCount;
+      // 写入后使该车辆的最新位置缓存失效
+      for (const doc of batch) {
+        this.cache.del(buildKey('loc_latest', doc.vehicle_id));
+      }
     }
 
     this.logger.log(`成功处理 ${totalInserted} 条位置数据`);
@@ -39,35 +47,64 @@ export class LocationService {
     vehicleId: string,
     startTime: string,
     endTime: string,
-    page: number = 1,
-    pageSize: number = 1000,
-  ) {
+    pageSize: number = 500,
+    cursor: string | null = null,
+  ): Promise<SeekPaginatedResult<LeanLocation>> {
+    const cacheKey = buildKey(
+      'loc_hist',
+      vehicleId,
+      startTime,
+      endTime,
+      pageSize,
+      cursor || '',
+    );
+    const cached = this.cache.get<SeekPaginatedResult<LeanLocation>>(cacheKey);
+    if (cached) return cached;
+
     const start = new Date(startTime);
     const end = new Date(endTime);
+    const result = await this.locationRepository.findByVehicleAndTimeRange(
+      vehicleId,
+      start,
+      end,
+      pageSize,
+      cursor,
+    );
 
-    const [data, total] = await Promise.all([
-      this.locationRepository.findByVehicleAndTimeRange(
-        vehicleId,
-        start,
-        end,
-        page,
-        pageSize,
-      ),
-      this.locationRepository.countByVehicleAndTimeRange(vehicleId, start, end),
-    ]);
-
-    return {
-      data,
-      pagination: {
-        page,
-        page_size: pageSize,
-        total,
-        total_pages: Math.ceil(total / pageSize),
-      },
-    };
+    this.cache.set(cacheKey, result, 5000);
+    return result;
   }
 
-  async getLatest(vehicleId: string) {
-    return this.locationRepository.findLatestByVehicle(vehicleId);
+  async getLatest(vehicleId: string): Promise<LeanLocation | null> {
+    const cacheKey = buildKey('loc_latest', vehicleId);
+    const cached = this.cache.get<LeanLocation | null>(cacheKey);
+    // 注意：缓存里可能存 null（该车辆没数据），要区分 miss 和 hit(null)
+    if (cached !== undefined && cached !== null) return cached;
+
+    const result = await this.locationRepository.findLatestByVehicle(vehicleId);
+    if (result) {
+      this.cache.set(cacheKey, result, 3000);
+    }
+    return result;
+  }
+
+  async getStats(
+    vehicleId: string,
+    startTime: string,
+    endTime: string,
+  ): Promise<LocationStats> {
+    const cacheKey = buildKey('loc_stats', vehicleId, startTime, endTime);
+    const cached = this.cache.get<LocationStats>(cacheKey);
+    if (cached) return cached;
+
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    const stats = await this.locationRepository.aggregateStats(
+      vehicleId,
+      start,
+      end,
+    );
+    this.cache.set(cacheKey, stats, 15000);
+    return stats;
   }
 }

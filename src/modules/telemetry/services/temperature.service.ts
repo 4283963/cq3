@@ -1,12 +1,21 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { TemperatureRepository } from '../repositories/temperature.repository';
+import {
+  TemperatureRepository,
+  LeanTemperature,
+  SeekPaginatedResult,
+  TemperatureStats,
+} from '../repositories/temperature.repository';
 import { TemperatureItemDto } from '../dto/telemetry.dto';
+import { LruCacheService, buildKey } from './lru-cache.service';
 
 @Injectable()
 export class TemperatureService {
   private readonly logger = new Logger(TemperatureService.name);
 
-  constructor(private readonly temperatureRepository: TemperatureRepository) {}
+  constructor(
+    private readonly temperatureRepository: TemperatureRepository,
+    private readonly cache: LruCacheService,
+  ) {}
 
   async bulkProcess(temperatures: TemperatureItemDto[]): Promise<number> {
     if (temperatures.length === 0) return 0;
@@ -38,6 +47,9 @@ export class TemperatureService {
       const batch = docs.slice(i, i + batchSize);
       const result = await this.temperatureRepository.bulkInsert(batch);
       totalInserted += result.insertedCount;
+      for (const doc of batch) {
+        this.cache.del(buildKey('temp_latest', doc.vehicle_id));
+      }
     }
 
     this.logger.log(`成功处理 ${totalInserted} 条温度数据`);
@@ -48,36 +60,63 @@ export class TemperatureService {
     vehicleId: string,
     startTime: string,
     endTime: string,
-    page: number = 1,
-    pageSize: number = 1000,
-  ) {
+    pageSize: number = 500,
+    cursor: string | null = null,
+  ): Promise<SeekPaginatedResult<LeanTemperature>> {
+    const cacheKey = buildKey(
+      'temp_hist',
+      vehicleId,
+      startTime,
+      endTime,
+      pageSize,
+      cursor || '',
+    );
+    const cached = this.cache.get<SeekPaginatedResult<LeanTemperature>>(cacheKey);
+    if (cached) return cached;
+
     const start = new Date(startTime);
     const end = new Date(endTime);
-
-    const [data, total] = await Promise.all([
-      this.temperatureRepository.findByVehicleAndTimeRange(
-        vehicleId,
-        start,
-        end,
-        page,
-        pageSize,
-      ),
-      this.temperatureRepository.countByVehicleAndTimeRange(vehicleId, start, end),
-    ]);
-
-    return {
-      data,
-      pagination: {
-        page,
-        page_size: pageSize,
-        total,
-        total_pages: Math.ceil(total / pageSize),
-      },
-    };
+    const result = await this.temperatureRepository.findByVehicleAndTimeRange(
+      vehicleId,
+      start,
+      end,
+      pageSize,
+      cursor,
+    );
+    this.cache.set(cacheKey, result, 5000);
+    return result;
   }
 
-  async getLatest(vehicleId: string) {
-    return this.temperatureRepository.findLatestByVehicle(vehicleId);
+  async getLatest(vehicleId: string): Promise<LeanTemperature | null> {
+    const cacheKey = buildKey('temp_latest', vehicleId);
+    const cached = this.cache.get<LeanTemperature | null>(cacheKey);
+    if (cached !== undefined && cached !== null) return cached;
+
+    const result = await this.temperatureRepository.findLatestByVehicle(vehicleId);
+    if (result) {
+      this.cache.set(cacheKey, result, 3000);
+    }
+    return result;
+  }
+
+  async getStats(
+    vehicleId: string,
+    startTime: string,
+    endTime: string,
+  ): Promise<TemperatureStats> {
+    const cacheKey = buildKey('temp_stats', vehicleId, startTime, endTime);
+    const cached = this.cache.get<TemperatureStats>(cacheKey);
+    if (cached) return cached;
+
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    const stats = await this.temperatureRepository.aggregateStats(
+      vehicleId,
+      start,
+      end,
+    );
+    this.cache.set(cacheKey, stats, 15000);
+    return stats;
   }
 
   async getAlarms(

@@ -8,8 +8,10 @@ import { LruCacheService } from './services/lru-cache.service';
 import { LocationService } from './services/location.service';
 import { TemperatureService } from './services/temperature.service';
 import { TelemetryService } from './services/telemetry.service';
+import { RiskAnalysisService } from './services/risk-analysis.service';
 import { TelemetryController } from './controllers/telemetry.controller';
 import { HistoryController } from './controllers/history.controller';
+import { RiskController } from './controllers/risk.controller';
 
 @Module({
   imports: [
@@ -18,7 +20,7 @@ import { HistoryController } from './controllers/history.controller';
       { name: Temperature.name, schema: TemperatureSchema },
     ]),
   ],
-  controllers: [TelemetryController, HistoryController],
+  controllers: [TelemetryController, HistoryController, RiskController],
   providers: [
     LruCacheService,
     LocationRepository,
@@ -26,7 +28,14 @@ import { HistoryController } from './controllers/history.controller';
     LocationService,
     TemperatureService,
     TelemetryService,
+    RiskAnalysisService,
   ],
-  exports: [TelemetryService, LocationService, TemperatureService, LruCacheService],
+  exports: [
+    TelemetryService,
+    LocationService,
+    TemperatureService,
+    LruCacheService,
+    RiskAnalysisService,
+  ],
 })
 export class TelemetryModule {}
